@@ -1,0 +1,139 @@
+---
+- name: Install ClickHouse
+  hosts: clickhouse
+  become: true
+  tasks:
+    - name: Ensure curl is installed
+      ansible.builtin.apt:
+        name: curl
+        state: present
+        update_cache: true
+
+    - name: Check if ClickHouse is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/clickhouse
+      register: clickhouse_binary
+
+    - name: Download and install ClickHouse via official script
+      ansible.builtin.shell: |
+        curl https://clickhouse.com/ | sh
+        mv clickhouse /usr/local/bin/
+      args:
+        creates: /usr/local/bin/clickhouse
+      when: not clickhouse_binary.stat.exists
+
+    - name: Create clickhouse user group
+      ansible.builtin.group:
+        name: clickhouse
+        state: present
+
+    - name: Create clickhouse user
+      ansible.builtin.user:
+        name: clickhouse
+        group: clickhouse
+        system: true
+        shell: /bin/false
+
+    - name: Create config and data directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: clickhouse
+        group: clickhouse
+        mode: "0755"
+      loop:
+        - /etc/clickhouse-server
+        - /var/var/log/clickhouse-server
+        - /var/lib/clickhouse
+
+    - name: Generate basic server config
+      ansible.builtin.shell: /usr/local/bin/clickhouse server --generate-config
+      args:
+        chdir: /etc/clickhouse-server
+        creates: /etc/clickhouse-server/config.xml
+
+    - name: Create systemd service unit for ClickHouse
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/clickhouse-server.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=ClickHouse Server (background process)
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=clickhouse
+          Group=clickhouse
+          WorkingDirectory=/var/lib/clickhouse
+          ExecStart=/usr/local/bin/clickhouse server --config-file=/etc/clickhouse-server/config.xml
+          Restart=always
+
+    - name: Start and enable ClickHouse service
+      ansible.builtin.service:
+        name: clickhouse-server
+        state: started
+        enabled: true
+        daemon_reload: true
+
+- name: Install Vector
+  hosts: vector
+  become: true
+  tasks:
+    - name: Copy Vector binary from local machine to host
+      ansible.builtin.copy:
+        src: /tmp/vector-x86_64-unknown-linux-musl/bin/vector
+        dest: /usr/local/bin/vector
+        mode: "0755"
+
+    - name: Ensure Vector configuration directory exists
+      ansible.builtin.file:
+        path: /etc/vector
+        state: directory
+        mode: "0755"
+
+    - name: Create systemd service unit for Vector
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/vector.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Vector CLI log agent
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/vector
+          Restart=always
+
+    - name: Start and enable Vector service
+      ansible.builtin.service:
+        name: vector
+        state: started
+        enabled: true
+        daemon_reload: true
+
+
+- name: Install Lighthouse and Nginx
+  hosts: lighthouse
+  become: true
+  tasks:
+    - name: Install Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+
+    - name: Ensure Nginx is started and enabled
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Copy Lighthouse source code to Nginx directory
+      ansible.builtin.copy:
+        src: ./
+        dest: /var/www/html/
+        owner: www-data
+        group: www-data
+        mode: "0644"
